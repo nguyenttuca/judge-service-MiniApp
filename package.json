@@ -1,0 +1,19 @@
+{
+  "name": "judge-service",
+  "version": "1.0.0",
+  "description": "Online Judge Sandbox Service — compiles, runs, and evaluates competitive programming submissions",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test/test-judge.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "uuid": "^11.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
