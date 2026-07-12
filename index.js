@@ -14,7 +14,7 @@ const API_KEY = process.env.JUDGE_API_KEY || '';
 const app = express();
 
 // ---- Body parser with size limit ----
-app.use(express.json({ limit: '1000mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 // ---- Optional API-key middleware ----
 if (API_KEY) {
