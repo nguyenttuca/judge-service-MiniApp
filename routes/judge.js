@@ -158,8 +158,13 @@ router.post('/judge', async (req, res) => {
     // ---- 4.5 Compile Custom Checker (if needed) ----
     let compiledCheckerBin = null;
     if (checker_type === 'custom') {
+      let checkerText = custom_checker_code;
+      if (isBase64(custom_checker_code)) {
+        checkerText = Buffer.from(custom_checker_code, 'base64').toString('utf-8');
+      }
+
       const checkerCompile = await compileCustomChecker({
-        checkerCode: custom_checker_code,
+        checkerCode: checkerText,
         workDir,
       });
       if (!checkerCompile.success) {
