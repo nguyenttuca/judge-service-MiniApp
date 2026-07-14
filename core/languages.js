@@ -61,6 +61,17 @@ const LANGUAGES = {
     run: (binary) => ({ cmd: binary, args: [] }),
     available: false,
   },
+  java: {
+    ext: '.java',
+    filename: 'Main.java',
+    detectCmd: ['javac', ['-version']],
+    compile: (src, out) => ({
+      cmd: 'javac',
+      args: ['-d', path.dirname(out), src],
+    }),
+    run: (binary) => ({ cmd: 'java', args: ['-cp', path.dirname(binary), 'Main'] }),
+    available: false,
+  },
 };
 
 /**

@@ -108,7 +108,7 @@ router.post('/judge', async (req, res) => {
   const lang = getLanguage(language);
   if (!lang) {
     return res.status(400).json({
-      error: `Unknown language "${language}". Supported: cpp, c, python, pascal`,
+      error: `Unknown language "${language}". Supported: cpp, c, python, pascal, java`,
     });
   }
   if (!lang.available) {
@@ -140,7 +140,8 @@ router.post('/judge', async (req, res) => {
       sourceText = Buffer.from(source_code, 'base64').toString('utf-8');
     }
 
-    const sourceFile = path.join(workDir, `solution${lang.ext}`);
+    const fileName = lang.filename || `solution${lang.ext}`;
+    const sourceFile = path.join(workDir, fileName);
     const binaryFile = path.join(workDir, 'solution');
     await fs.promises.writeFile(sourceFile, sourceText, 'utf-8');
 
