@@ -69,7 +69,7 @@ const LANGUAGES = {
       cmd: 'javac',
       args: ['-d', path.dirname(out), src],
     }),
-    run: (binary) => ({ cmd: 'java', args: ['-cp', path.dirname(binary), 'Main'] }),
+    run: (binary) => ({ cmd: 'java', args: ['-Xmx256M', '-Xms16M', '-Xss64M', '-cp', path.dirname(binary), 'Main'] }),
     available: false,
   },
 };
