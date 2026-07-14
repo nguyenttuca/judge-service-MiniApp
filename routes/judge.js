@@ -4,19 +4,22 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
+const pLimitModule = require('p-limit');
+const pLimit = pLimitModule.default || pLimitModule;
 
 const { getLanguage, getLanguageStatus } = require('../core/languages');
 const { runInSandbox } = require('../core/sandbox');
 const { compileSource } = require('../core/compiler');
-const { diffCheck, customCheck } = require('../core/checker');
+const { diffCheck, compileCustomChecker, runCustomCheck } = require('../core/checker');
 
 const router = express.Router();
 
 // ---------------------------------------------------------------
 // Concurrency limiter — simple async semaphore
 // ---------------------------------------------------------------
-const MAX_CONCURRENT = parseInt(process.env.JUDGE_MAX_CONCURRENT, 10) || 3;
+const MAX_CONCURRENT = parseInt(process.env.JUDGE_MAX_CONCURRENT, 10) || os.cpus().length;
 let activeJobs = 0;
 const waitQueue = [];
 
@@ -52,6 +55,8 @@ function truncate(str, limit = MAX_OUTPUT_LEN) {
 // Helper: determine overall verdict from test results
 // ---------------------------------------------------------------
 function overallVerdict(testResults) {
+  // Sort test results by index since they might finish out of order
+  testResults.sort((a, b) => a.test_index - b.test_index);
   for (const t of testResults) {
     if (t.verdict !== 'AC') return t.verdict;
   }
@@ -92,11 +97,11 @@ router.post('/judge', async (req, res) => {
     });
   }
 
-  // Source size guard (64 KB)
+  // Source size guard (100 MB)
   const sourceBytes = Buffer.byteLength(source_code, 'utf-8');
-  if (sourceBytes > 64 * 1024) {
+  if (sourceBytes > 100 * 1024 * 1024) {
     return res.status(400).json({
-      error: `Source code too large (${sourceBytes} bytes). Maximum is 65536 bytes.`,
+      error: `Source code too large (${sourceBytes} bytes). Maximum is 100MB.`,
     });
   }
 
@@ -127,7 +132,7 @@ router.post('/judge', async (req, res) => {
   const workDir = path.join(tmpRoot, jobId);
 
   try {
-    fs.mkdirSync(workDir, { recursive: true });
+    await fs.promises.mkdir(workDir, { recursive: true });
 
     // Decode source (support base64 or plain text)
     let sourceText = source_code;
@@ -137,9 +142,9 @@ router.post('/judge', async (req, res) => {
 
     const sourceFile = path.join(workDir, `solution${lang.ext}`);
     const binaryFile = path.join(workDir, 'solution');
-    fs.writeFileSync(sourceFile, sourceText, 'utf-8');
+    await fs.promises.writeFile(sourceFile, sourceText, 'utf-8');
 
-    // ---- 4. Compile ----
+    // ---- 4. Compile Source ----
     const compileResult = await compileSource(lang, sourceFile, binaryFile, workDir);
     if (!compileResult.success) {
       return res.json({
@@ -149,11 +154,34 @@ router.post('/judge', async (req, res) => {
       });
     }
 
+    // ---- 4.5 Compile Custom Checker (if needed) ----
+    let compiledCheckerBin = null;
+    if (checker_type === 'custom') {
+      const checkerCompile = await compileCustomChecker({
+        checkerCode: custom_checker_code,
+        workDir,
+      });
+      if (!checkerCompile.success) {
+        return res.json({
+          verdict: 'CE',
+          compile_output: truncate(checkerCompile.checkerStderr),
+          test_results: [],
+        });
+      }
+      compiledCheckerBin = checkerCompile.checkerBin;
+    }
+
     // ---- 5. Run test cases ----
     const testResults = [];
+    
+    // Concurrency limit for test cases inside a job
+    const limitTestCases = pLimit(MAX_CONCURRENT); // use up to MAX_CONCURRENT tests at once
+    let failed = false;
 
-    for (let i = 0; i < test_cases.length; i++) {
-      const tc = test_cases[i];
+    const testPromises = test_cases.map((tc, i) => limitTestCases(async () => {
+      // Short-circuit check
+      if (failed && !run_all_tests) return;
+
       const { cmd, args } = lang.compile
         ? lang.run(binaryFile)          // compiled → run binary
         : lang.run(sourceFile);         // interpreted → run source
@@ -170,7 +198,9 @@ router.post('/judge', async (req, res) => {
 
       // Determine per-test verdict
       let verdict;
-      if (result.timedOut) {
+      if (result.ole) {
+        verdict = 'OLE';
+      } else if (result.timedOut) {
         verdict = 'TLE';
       } else if (result.oom) {
         verdict = 'MLE';
@@ -180,12 +210,13 @@ router.post('/judge', async (req, res) => {
         // Check output
         let accepted;
         if (checker_type === 'custom') {
-          const cr = await customCheck({
-            checkerCode: custom_checker_code,
+          const cr = await runCustomCheck({
+            checkerBin: compiledCheckerBin,
             inputData: tc.input || '',
             actualOutput: result.stdout,
             expectedOutput: tc.expected_output || '',
             workDir,
+            testIndex: i,
             timeoutMs: 10_000,
           });
           accepted = cr.accepted;
@@ -193,6 +224,10 @@ router.post('/judge', async (req, res) => {
           accepted = diffCheck(result.stdout, tc.expected_output || '');
         }
         verdict = accepted ? 'AC' : 'WA';
+      }
+
+      if (verdict !== 'AC') {
+        failed = true;
       }
 
       testResults.push({
@@ -203,12 +238,9 @@ router.post('/judge', async (req, res) => {
         stdout: truncate(result.stdout),
         stderr: truncate(result.stderr),
       });
+    }));
 
-      // Short-circuit on first failure unless run_all_tests
-      if (verdict !== 'AC' && !run_all_tests) {
-        break;
-      }
-    }
+    await Promise.all(testPromises);
 
     return res.json({
       verdict: overallVerdict(testResults),
@@ -225,7 +257,7 @@ router.post('/judge', async (req, res) => {
   } finally {
     // ---- 6. Cleanup workspace ----
     try {
-      fs.rmSync(workDir, { recursive: true, force: true });
+      await fs.promises.rm(workDir, { recursive: true, force: true });
     } catch {
       console.warn(`[JUDGE] Failed to clean up ${workDir}`);
     }
@@ -238,16 +270,8 @@ router.post('/judge', async (req, res) => {
 // ---------------------------------------------------------------
 function isBase64(str) {
   if (str.length < 8) return false;
-  // Check if the string looks like valid base64 and decodes to valid UTF-8
-  if (!/^[A-Za-z0-9+/\n\r]+=*$/.test(str.replace(/\s/g, ''))) return false;
-  try {
-    const decoded = Buffer.from(str, 'base64').toString('utf-8');
-    // If re-encoding matches, it's likely base64
-    return Buffer.from(decoded, 'utf-8').toString('base64').replace(/\s/g, '') ===
-      str.replace(/\s/g, '');
-  } catch {
-    return false;
-  }
+  // Fast regex to verify valid base64 (allows whitespace/newlines)
+  return /^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$/.test(str.replace(/[\s\r\n]/g, ''));
 }
 
 module.exports = router;

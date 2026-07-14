@@ -32,48 +32,24 @@ function diffCheck(actual, expected) {
 }
 
 /**
- * Custom checker — compile & run a C++ checker program.
- * The checker receives three files via argv: input, contestant_output, expected_output.
- * Exit code 0 = AC, non-zero = WA.
- *
+ * Compile a custom C++ checker program once per job.
  * @param {object} opts
- * @param {string}  opts.checkerCode     — C++ source code of the checker
- * @param {string}  opts.inputData       — test input
- * @param {string}  opts.actualOutput    — contestant stdout
- * @param {string}  opts.expectedOutput  — expected output
- * @param {string}  opts.workDir         — working directory
- * @param {number}  opts.timeoutMs       — timeout for checker execution
- *
- * @returns {Promise<{ accepted: boolean, checkerStderr: string }>}
+ * @param {string} opts.checkerCode
+ * @param {string} opts.workDir
  */
-async function customCheck(opts) {
-  const {
-    checkerCode,
-    inputData,
-    actualOutput,
-    expectedOutput,
-    workDir,
-    timeoutMs = 10_000,
-  } = opts;
+async function compileCustomChecker(opts) {
+  const { checkerCode, workDir } = opts;
+  const fsPromises = require('fs').promises;
 
-  // Write checker source & data files
   const checkerSrc = path.join(workDir, 'checker.cpp');
   const checkerBin = path.join(workDir, 'checker');
-  const inputFile = path.join(workDir, 'input.txt');
-  const actualFile = path.join(workDir, 'actual.txt');
-  const expectedFile = path.join(workDir, 'expected.txt');
 
-  fs.writeFileSync(checkerSrc, checkerCode, 'utf-8');
-  fs.writeFileSync(inputFile, inputData, 'utf-8');
-  fs.writeFileSync(actualFile, actualOutput, 'utf-8');
-  fs.writeFileSync(expectedFile, expectedOutput, 'utf-8');
+  await fsPromises.writeFile(checkerSrc, checkerCode, 'utf-8');
 
-  // Thêm code detect GCC giống hệt languages.js
   const PORTABLE_GCC_DIR = path.join(__dirname, '..', 'gcc-toolchain', 'bin');
   const portableGpp = path.join(PORTABLE_GCC_DIR, 'x86_64-linux-musl-g++');
   const gppCmd = fs.existsSync(portableGpp) ? portableGpp : 'g++';
 
-  // Compile checker
   const compileResult = await runInSandbox({
     cmd: gppCmd,
     args: ['-O2', '-std=c++17', '-o', checkerBin, checkerSrc],
@@ -85,12 +61,41 @@ async function customCheck(opts) {
 
   if (compileResult.exitCode !== 0) {
     return {
-      accepted: false,
+      success: false,
       checkerStderr: `Checker compilation failed:\n${compileResult.stderr}`,
     };
   }
 
-  // Run checker
+  return { success: true, checkerBin };
+}
+
+/**
+ * Run a compiled custom checker.
+ * @param {object} opts
+ */
+async function runCustomCheck(opts) {
+  const {
+    checkerBin,
+    inputData,
+    actualOutput,
+    expectedOutput,
+    workDir,
+    testIndex,
+    timeoutMs = 10_000,
+  } = opts;
+  
+  const fsPromises = require('fs').promises;
+
+  const inputFile = path.join(workDir, `input_${testIndex}.txt`);
+  const actualFile = path.join(workDir, `actual_${testIndex}.txt`);
+  const expectedFile = path.join(workDir, `expected_${testIndex}.txt`);
+
+  await Promise.all([
+    fsPromises.writeFile(inputFile, inputData, 'utf-8'),
+    fsPromises.writeFile(actualFile, actualOutput, 'utf-8'),
+    fsPromises.writeFile(expectedFile, expectedOutput, 'utf-8'),
+  ]);
+
   const runResult = await runInSandbox({
     cmd: checkerBin,
     args: [inputFile, actualFile, expectedFile],
@@ -106,4 +111,4 @@ async function customCheck(opts) {
   };
 }
 
-module.exports = { diffCheck, customCheck };
+module.exports = { diffCheck, compileCustomChecker, runCustomCheck };

@@ -75,9 +75,25 @@ function runInSandbox(opts) {
 
     const startHr = process.hrtime.bigint();
 
+    // Minimal PATH for the submitted process: only the directories needed to
+    // locate compilers/interpreters (portable gcc-toolchain + standard system
+    // bin dirs where python3/fpc typically live). Previously this fell back to
+    // process.env.PATH — the judge-service's own PATH — handing the submitted
+    // code a full view of every bin directory the judge process can see. That
+    // is not a secret leak by itself (no credentials in PATH), but it is
+    // reconnaissance information the sandbox should not be exposing, and it
+    // contradicts the README's claim of a fully isolated env. Callers may still
+    // pass an explicit `env` to override this.
+    const MINIMAL_PATH = [
+      path.join(__dirname, '..', 'gcc-toolchain', 'bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+    ].join(':');
+
     const child = spawn(spawnCmd, spawnArgs, {
       cwd,
-      env: env || { PATH: process.env.PATH + ':' + path.join(__dirname, '..', 'gcc-toolchain', 'bin') },
+      env: env || { PATH: MINIMAL_PATH },
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: wallTimeout,
     });
@@ -87,9 +103,16 @@ function runInSandbox(opts) {
     let stdoutLen = 0;
     let stderrLen = 0;
     let killed = false;
-    let peakMemKb = 0;
+    let peakMemKb = 0;   // peak RSS — reported to the caller (resident, physical)
+    let peakVszKb = 0;   // peak VSZ — what ulimit -v actually constrains (virtual)
 
     // ---- Memory sampling (Linux /proc) ----
+    // NOTE: ulimit -v limits VIRTUAL memory (VmSize/VmPeak), but the historical
+    // code only sampled VmRSS (resident memory). A process can be killed by
+    // ulimit -v (e.g. a large mmap/reserve that never touches most pages) while
+    // its RSS stays far below memoryMb — under the old logic that produced
+    // oom=false and the verdict fell through to RE instead of MLE. We now track
+    // both and use whichever is closer to the configured limit when deciding oom.
     let memPoller = null;
     if (child.pid) {
       const procStatus = `/proc/${child.pid}/status`;
@@ -97,10 +120,18 @@ function runInSandbox(opts) {
         try {
           const fs = require('fs');
           const content = fs.readFileSync(procStatus, 'utf-8');
-          const match = content.match(/VmRSS:\s+(\d+)\s+kB/);
-          if (match) {
-            const rss = parseInt(match[1], 10);
+          const rssMatch = content.match(/VmRSS:\s+(\d+)\s+kB/);
+          if (rssMatch) {
+            const rss = parseInt(rssMatch[1], 10);
             if (rss > peakMemKb) peakMemKb = rss;
+          }
+          // Prefer VmPeak (high-water mark of virtual size); fall back to VmSize
+          const vszMatch =
+            content.match(/VmPeak:\s+(\d+)\s+kB/) ||
+            content.match(/VmSize:\s+(\d+)\s+kB/);
+          if (vszMatch) {
+            const vsz = parseInt(vszMatch[1], 10);
+            if (vsz > peakVszKb) peakVszKb = vsz;
           }
         } catch {
           // Process may have already exited or /proc unavailable (macOS)
@@ -137,11 +168,17 @@ function runInSandbox(opts) {
       const timedOut =
         signal === 'SIGTERM' || signal === 'SIGKILL' || timeMs >= wallTimeout;
 
-      // Heuristic: if killed by signal 9 and we hit memory → OOM
+      // Heuristic: if killed by signal 9 and we hit memory → OOM.
+      // Check RSS OR VSZ against the limit — ulimit -v kills on virtual size,
+      // not resident size, so a VSZ-only spike (e.g. large mmap/reserve with
+      // little touched memory) must still be classified as MLE, not RE.
+      const memLimitKb = memoryMb * 1024;
+      const hitRss = peakMemKb >= memLimitKb * 0.9;
+      const hitVsz = peakVszKb >= memLimitKb * 0.9;
       const oom =
         !timedOut &&
         (signal === 'SIGKILL' || exitCode === 137) &&
-        peakMemKb >= memoryMb * 1024 * 0.9;
+        (hitRss || hitVsz);
 
       resolve({
         exitCode,
@@ -152,6 +189,7 @@ function runInSandbox(opts) {
         oom,
         timeMs,
         memoryKb: peakMemKb,
+        vszKb: peakVszKb,
       });
     });
 
