@@ -208,8 +208,10 @@ router.post('/judge', async (req, res) => {
         verdict = 'OLE';
       } else if (result.timedOut) {
         verdict = 'TLE';
+        result.timeMs = time_limit_ms;
       } else if (result.oom) {
         verdict = 'MLE';
+        result.memoryKb = memory_limit_mb * 1024;
       } else if (result.exitCode !== 0) {
         verdict = 'RE';
       } else {
