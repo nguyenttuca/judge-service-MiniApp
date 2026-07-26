@@ -1,0 +1,7 @@
+[INIT] Judge Service starting …
+[INIT]   python   → ✓ available
+[INIT]   pascal   → ✓ available
+[INIT]   c        → ✓ available
+[INIT]   cpp      → ✓ available
+[INIT] Compiler check: cpp=OK, c=OK, python=OK, pascal=OK
+[INIT] Judge Service listening on port 25171

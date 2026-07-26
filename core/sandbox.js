@@ -16,6 +16,7 @@ const SPAWN_OVERHEAD_MS = 500;               // extra grace for process startup
  * @param {string}   opts.cmd           — executable path or name
  * @param {string[]} opts.args          — arguments
  * @param {string}   [opts.stdin]       — data piped to stdin
+ * @param {string}   [opts.stdinFile]   — path to file to use as stdin (overrides stdin)
  * @param {number}   opts.timeoutMs     — wall-clock timeout (ms)
  * @param {number}   [opts.memoryMb]    — virtual memory limit (MB)
  * @param {number}   [opts.maxBuffer]   — max stdout+stderr bytes
@@ -38,6 +39,7 @@ function runInSandbox(opts) {
     cmd,
     args = [],
     stdin = '',
+    stdinFile,
     timeoutMs = 5000,
     memoryMb = 256,
     maxBuffer = DEFAULT_MAX_BUFFER,
@@ -105,12 +107,25 @@ function runInSandbox(opts) {
       ].join(':');
     }
 
+    let stdinStreamFd;
+    let stdioConfig = ['pipe', 'pipe', 'pipe'];
+    if (stdinFile) {
+      const fs = require('fs');
+      stdinStreamFd = fs.openSync(stdinFile, 'r');
+      stdioConfig[0] = stdinStreamFd;
+    }
+
     const child = spawn(spawnCmd, spawnArgs, {
       cwd,
       env: env || { PATH: MINIMAL_PATH },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: stdioConfig,
       timeout: wallTimeout,
     });
+
+    if (stdinStreamFd !== undefined) {
+      const fs = require('fs');
+      fs.closeSync(stdinStreamFd);
+    }
 
     let stdout = '';
     let stderr = '';
@@ -222,10 +237,12 @@ function runInSandbox(opts) {
     });
 
     // ---- Feed stdin ----
-    if (stdin) {
-      child.stdin.write(stdin);
+    if (child.stdin) {
+      if (stdin) {
+        child.stdin.write(stdin);
+      }
+      child.stdin.end();
     }
-    child.stdin.end();
   });
 }
 

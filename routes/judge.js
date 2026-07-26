@@ -81,6 +81,8 @@ router.get('/health', (_req, res) => {
 router.post('/judge', async (req, res) => {
   // ---- 1. Validate request ----
   const {
+    problem_id,
+    updated_at,
     language,
     source_code,
     time_limit_ms = 1000,
@@ -91,10 +93,32 @@ router.post('/judge', async (req, res) => {
     run_all_tests = false,
   } = req.body;
 
-  if (!language || !source_code || !Array.isArray(test_cases) || test_cases.length === 0) {
+  if (!language || !source_code) {
     return res.status(400).json({
-      error: 'Missing required fields: language, source_code, test_cases (non-empty array)',
+      error: 'Missing required fields: language, source_code',
     });
+  }
+
+  // ---- 1.5 Cache Check ----
+  let cacheDir = null;
+  let testCount = 0;
+  
+  if (!test_cases || test_cases.length === 0) {
+    if (!problem_id || !updated_at) {
+       return res.status(400).json({ error: 'MISSING_TESTCASES' });
+    }
+    cacheDir = path.join(__dirname, '..', 'cache', 'problems', String(problem_id));
+    const metaFile = path.join(cacheDir, '.meta.json');
+    if (!fs.existsSync(metaFile)) {
+       return res.status(400).json({ error: 'MISSING_TESTCASES' });
+    }
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf-8'));
+    if (String(meta.updated_at) !== String(updated_at)) {
+       return res.status(400).json({ error: 'MISSING_TESTCASES' });
+    }
+    testCount = meta.count;
+  } else {
+    testCount = test_cases.length;
   }
 
   // Source size guard (100 MB)
@@ -184,7 +208,10 @@ router.post('/judge', async (req, res) => {
     const limitTestCases = pLimit(MAX_CONCURRENT); // use up to MAX_CONCURRENT tests at once
     let failed = false;
 
-    const testPromises = test_cases.map((tc, i) => limitTestCases(async () => {
+    // Create array of indices to map over
+    const indices = Array.from({ length: testCount }, (_, i) => i);
+
+    const testPromises = indices.map((i) => limitTestCases(async () => {
       // Short-circuit check
       if (failed && !run_all_tests) return;
 
@@ -192,10 +219,23 @@ router.post('/judge', async (req, res) => {
         ? lang.run(binaryFile)          // compiled → run binary
         : lang.run(sourceFile);         // interpreted → run source
 
+      let tcInputStr = '';
+      let tcExpectedOutStr = '';
+      let stdinFile;
+      
+      if (cacheDir) {
+        stdinFile = path.join(cacheDir, `${i}.in`);
+        tcExpectedOutStr = fs.readFileSync(path.join(cacheDir, `${i}.out`), 'utf-8');
+      } else {
+        tcInputStr = test_cases[i].input || '';
+        tcExpectedOutStr = test_cases[i].expected_output || '';
+      }
+
       const result = await runInSandbox({
         cmd,
         args,
-        stdin: tc.input || '',
+        stdin: tcInputStr,
+        stdinFile: stdinFile,
         timeoutMs: time_limit_ms,
         memoryMb: memory_limit_mb,
         cwd: workDir,
@@ -220,16 +260,16 @@ router.post('/judge', async (req, res) => {
         if (checker_type === 'custom') {
           const cr = await runCustomCheck({
             checkerBin: compiledCheckerBin,
-            inputData: tc.input || '',
+            inputData: tcInputStr || (stdinFile ? fs.readFileSync(stdinFile, 'utf-8') : ''),
             actualOutput: result.stdout,
-            expectedOutput: tc.expected_output || '',
+            expectedOutput: tcExpectedOutStr,
             workDir,
             testIndex: i,
             timeoutMs: 10_000,
           });
           accepted = cr.accepted;
         } else {
-          accepted = diffCheck(result.stdout, tc.expected_output || '');
+          accepted = diffCheck(result.stdout, tcExpectedOutStr);
         }
         verdict = accepted ? 'AC' : 'WA';
       }

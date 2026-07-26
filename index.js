@@ -7,6 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const { detectAvailableCompilers, getLanguageStatus } = require('./core/languages');
 const judgeRoutes = require('./routes/judge');
+const testcasesRoutes = require('./routes/testcases');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const API_KEY = process.env.JUDGE_API_KEY || '';
@@ -36,6 +37,7 @@ if (API_KEY) {
 
 // ---- Routes ----
 app.use('/', judgeRoutes);
+app.use('/testcases', testcasesRoutes);
 
 // ---- Global error handler ----
 app.use((err, _req, res, _next) => {
