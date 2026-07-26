@@ -10,6 +10,12 @@ console.log('=============================================');
 console.log(' Bắt đầu tải bộ biên dịch C++ (GCC Portable)');
 console.log('=============================================');
 
+const os = require('os');
+if (os.platform() !== 'linux') {
+    console.log('✅ Hệ điều hành không phải Linux. Bỏ qua tải GCC Portable (sẽ dùng g++ của hệ thống).');
+    process.exit(0);
+}
+
 if (fs.existsSync(TARGET_DIR)) {
     console.log('✅ Bộ biên dịch đã tồn tại. Không cần tải lại.');
     process.exit(0);

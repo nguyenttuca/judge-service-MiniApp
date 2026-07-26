@@ -49,17 +49,26 @@ function runInSandbox(opts) {
   return new Promise((resolve) => {
     const wallTimeout = timeoutMs + SPAWN_OVERHEAD_MS;
 
+    const isWindows = process.platform === 'win32';
+    const isMac = process.platform === 'darwin';
+
     // Build the actual command: optionally wrap with ulimit via bash
     let spawnCmd, spawnArgs;
-    if (useUlimit) {
+    // On Windows, /bin/bash and ulimit are not natively available, so we fallback to direct execution.
+    if (useUlimit && !isWindows) {
       const memKb = memoryMb * 1024;
       const cpuSec = Math.ceil(timeoutMs / 1000) + 2; // slight buffer
       const maxProcs = 64; // fork-bomb guard
-      const ulimits = [
-        `ulimit -v ${memKb}`,   // virtual memory
-        `ulimit -t ${cpuSec}`,  // CPU seconds
-        `ulimit -u ${maxProcs}`, // max user processes
-      ].join('; ');
+      
+      const ulimits = [];
+      // macOS (darwin) does not support ulimit -v well (throws Invalid argument)
+      if (!isMac) {
+        ulimits.push(`ulimit -v ${memKb}`); // virtual memory
+      }
+      ulimits.push(`ulimit -t ${cpuSec}`);  // CPU seconds
+      ulimits.push(`ulimit -u ${maxProcs}`); // max user processes
+      
+      const ulimitStr = ulimits.join('; ');
 
       // Escape args for shell — wrap each in single quotes
       const escaped = [cmd, ...args]
@@ -67,7 +76,7 @@ function runInSandbox(opts) {
         .join(' ');
 
       spawnCmd = '/bin/bash';
-      spawnArgs = ['-c', `${ulimits}; exec ${escaped}`];
+      spawnArgs = ['-c', `${ulimitStr}; exec ${escaped}`];
     } else {
       spawnCmd = cmd;
       spawnArgs = args;
@@ -84,12 +93,17 @@ function runInSandbox(opts) {
     // reconnaissance information the sandbox should not be exposing, and it
     // contradicts the README's claim of a fully isolated env. Callers may still
     // pass an explicit `env` to override this.
-    const MINIMAL_PATH = [
-      path.join(__dirname, '..', 'gcc-toolchain', 'bin'),
-      '/usr/local/bin',
-      '/usr/bin',
-      '/bin',
-    ].join(':');
+    let MINIMAL_PATH;
+    if (isWindows) {
+      MINIMAL_PATH = process.env.PATH;
+    } else {
+      MINIMAL_PATH = [
+        path.join(__dirname, '..', 'gcc-toolchain', 'bin'),
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin',
+      ].join(':');
+    }
 
     const child = spawn(spawnCmd, spawnArgs, {
       cwd,

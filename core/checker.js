@@ -48,7 +48,8 @@ async function compileCustomChecker(opts) {
 
   const PORTABLE_GCC_DIR = path.join(__dirname, '..', 'gcc-toolchain', 'bin');
   const portableGpp = path.join(PORTABLE_GCC_DIR, 'x86_64-linux-musl-g++');
-  const gppCmd = fs.existsSync(portableGpp) ? portableGpp : 'g++';
+  const isLinux = process.platform === 'linux';
+  const gppCmd = (isLinux && fs.existsSync(portableGpp)) ? portableGpp : 'g++';
 
   const compileResult = await runInSandbox({
     cmd: gppCmd,

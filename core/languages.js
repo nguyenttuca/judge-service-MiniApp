@@ -13,8 +13,9 @@ const PORTABLE_GCC_DIR = path.join(__dirname, '..', 'gcc-toolchain', 'bin');
 const portableGpp = path.join(PORTABLE_GCC_DIR, 'x86_64-linux-musl-g++');
 const portableGcc = path.join(PORTABLE_GCC_DIR, 'x86_64-linux-musl-gcc');
 
-const gppCmd = fs.existsSync(portableGpp) ? portableGpp : 'g++';
-const gccCmd = fs.existsSync(portableGcc) ? portableGcc : 'gcc';
+const isLinux = process.platform === 'linux';
+const gppCmd = (isLinux && fs.existsSync(portableGpp)) ? portableGpp : 'g++';
+const gccCmd = (isLinux && fs.existsSync(portableGcc)) ? portableGcc : 'gcc';
 
 /**
  * Per-language configuration.
@@ -59,17 +60,6 @@ const LANGUAGES = {
       args: ['-O2', `-o${out}`, src],
     }),
     run: (binary) => ({ cmd: binary, args: [] }),
-    available: false,
-  },
-  java: {
-    ext: '.java',
-    filename: 'Main.java',
-    detectCmd: ['javac', ['-version']],
-    compile: (src, out) => ({
-      cmd: 'javac',
-      args: ['-d', path.dirname(out), src],
-    }),
-    run: (binary) => ({ cmd: 'java', args: ['-Xmx256M', '-Xms16M', '-Xss64M', '-cp', path.dirname(binary), 'Main'] }),
     available: false,
   },
 };
